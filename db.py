@@ -10,9 +10,6 @@ from nltk.stem import PorterStemmer
 from string import ascii_lowercase, digits, punctuation
 
 class DBTable(db_api.DBTable):
-    # name: str
-    # fields: List[DBField]
-    # key_field_name: str
 
     def __init__(self, name: str, fields: List[DBField], key_field_name: str):
         super().__init__(name, fields, key_field_name)
@@ -99,27 +96,32 @@ class DBTable(db_api.DBTable):
             json.dump(data, the_file, default=str)
             the_file.truncate()
 
+    def create_new_file(self):
+        self.current_table_path = f'{DB_ROOT}\\{self.name}_{self.key_index[1]["file_amount"] + 1}.json'
+        self.current_table = []
+        self.key_index[1]["list_of_table_pathes"].append(self.current_table_path)
+        self.key_index[1]["file_amount"] += 1
+
     def insert_record(self, values: Dict[str, Any]) -> None:
-        if self.key_field_name in values.keys():
-            if (self.key_index[1]["file_amount"] == 0 and len(self.current_table_path) == 0) or (len(self.current_table[0]) > 50) :
-                self.current_table_path = f'{DB_ROOT}\\{self.name}_{self.key_index[1]["file_amount"] + 1}.json'
-                self.current_table = []
-                self.key_index[1]["list_of_table_pathes"].append(self.current_table_path)
-                self.key_index[1]["file_amount"] += 1
-            # update key_index
-            if str(values[self.key_field_name]) in self.key_index[0]:
-                raise ValueError
-            self.key_index[0][str(values[self.key_field_name])] = self.current_table_path
-            # update DB
-            if len(self.current_table) == 0:
-                self.current_table.append({str(values[self.key_field_name]): values})
-            else:
-                self.current_table[0][str(values[self.key_field_name])] = values
-            for field in values:
-                if field in self.key_index[1]["indexes"]:
-                    self.update_index(field, values[self.key_field_name], values[field], self.key_index[1]["indexes"][1])
-            self.update_current_table()
-            self.update_key_index()
+        if self.key_field_name not in values.keys():
+            raise ValueError
+        if (self.key_index[1]["file_amount"] == 0 and len(self.current_table_path) == 0) or (len(self.current_table[0]) > 50) :
+            self.create_new_file()
+        # update key_index
+        if str(values[self.key_field_name]) in self.key_index[0]:
+            raise ValueError
+        self.key_index[0][str(values[self.key_field_name])] = self.current_table_path
+        # update DB
+        if len(self.current_table) == 0:
+            self.current_table.append({str(values[self.key_field_name]): values})
+        else:
+            self.current_table[0][str(values[self.key_field_name])] = values
+        # update indexes
+        for field in values:
+            if field in self.key_index[1]["indexes"]:
+                self.update_index(field, values[self.key_field_name], values[field], self.key_index[1]["indexes"][1])
+        self.update_current_table()
+        self.update_key_index()
 
     def remove_from_index(self, field, key, str):
         with open(self.key_index[1]["indexes"][field][0], 'r+') as the_file:
@@ -137,6 +139,7 @@ class DBTable(db_api.DBTable):
         with open(self.key_index[0][str(key)], 'r+') as the_file:
             data = json.load(the_file)
             for field in data[0][str(key)]:
+                # delete from index
                 if field in self.key_index[1]["indexes"]:
                     self.remove_from_index(field, key, data[0][str(key)], self.key_index[1]["indexes"][1])
             data[0].pop(str(key), ValueError)
@@ -149,32 +152,23 @@ class DBTable(db_api.DBTable):
         self.key_index[0].pop(str(key))
         self.update_key_index()
 
-    def delete_records(self, criteria: List[SelectionCriteria]) -> None:
-        for i in range(len(criteria)):
-            if criteria[i].operator == "=":
-                criteria[i].operator = "=="
-        list_of_deleted_keys = []
+    def query_in_field_s_hash_index(self, criteria: List[SelectionCriteria]):
+        keys_list = []
         for i, c in enumerate(criteria):
-            if c.field_name in self.key_index[1]["indexes"]:
-                if "hash_table" in self.key_index[1]["indexes"][c.field_name]:
-                    with open(self.key_index[1]["indexes"][c.field_name][0], 'r+') as the_file:
-                        index = json.load(the_file)
-                    if c.operator == "==":
-                        list_of_deleted_keys += index[0][c.field_name][c.value]
-                    else:
-                        list_of_deleted_keys += list(filter(lambda key: all(
-                        [eval(self.get_record(key)[str(c.field_name)]) + c.operator + str(c.value) == True]), index[0][
-                        c.field_name]))
-                    criteria.pop(i)
-        for table_path in self.key_index[1]["list_of_table_pathes"]:
-            table_file = open(table_path)
-            data_table = json.load(table_file)
-            list_of_deleted_keys += list(filter(lambda x: all(
-                [eval(str(data_table[0][x][criteria[i].field_name]) + criteria[i].operator + str(
-                    criteria[i].value)) == True for i in range(len(criteria))]),
-                                               list(data_table[0].keys())))
-            # todo: improve afficiant
-        for key in list_of_deleted_keys:
+            if c.field_name in self.key_index[1]["indexes"] and "hash_table" in self.key_index[1]["indexes"][c.field_name]:
+                the_file = open(self.key_index[1]["indexes"][c.field_name][0], 'r+')
+                index = json.load(the_file)
+                if c.operator == "==":
+                    keys_list += index[0][c.field_name][c.value]
+                else:
+                    keys_list += list(filter(lambda key: all([eval(self.get_record(key)[str(c.field_name)]) + c.operator + str(c.value) == True]),index[0][c.field_name]))
+                the_file.close()
+                criteria.pop(i)
+        return keys_list, criteria
+
+    def delete_records(self, criteria: List[SelectionCriteria]) -> None:
+        # todo: improve afficiant
+        for key in self.query_table(criteria):
             self.delete_record(key)
 
     def get_record(self, key: Any) -> Dict[str, Any]:
@@ -198,46 +192,13 @@ class DBTable(db_api.DBTable):
         for i in range(len(criteria)):
             if criteria[i].operator == "=":
                 criteria[i].operator = "=="
-        list_of_returned_keys = []
-        for i, c in enumerate(criteria):
-            if c.field_name in self.key_index[1]["indexes"]:
-                if "hash_table" in self.key_index[1]["indexes"][c.field_name]:
-                    with open(self.key_index[1]["indexes"][c.field_name][0], 'r+') as the_file:
-                        index = json.load(the_file)
-                    if c.operator == "==":
-                        list_of_returned_keys += index[0][c.field_name][c.value]
-                    else:
-                        list_of_returned_keys += list(filter(lambda key: all(
-                        [eval(self.get_record(key)[str(c.field_name)]) + c.operator + str(c.value) == True]), index[0][
-                        c.field_name]))
-                    criteria.pop(i)
+        list_of_returned_keys, criteria = self.query_in_field_s_hash_index(criteria)
         for table_path in self.key_index[1]["list_of_table_pathes"]:
             with open(table_path) as table_file:
                 data_table = json.load(table_file)
                 list_of_returned_keys += list(filter(lambda x: all([eval(str(data_table[0][x][str(criteria[i].field_name)]) + criteria[i].operator + str(criteria[i].value)) == True for i in range(len(criteria))]), list(data_table[0].keys())))
         # todo: improve afficiant
         return [self.get_record(str(key)) for key in list_of_returned_keys]
-
-    def create_hash_index(self, field_to_index: str):
-        if field_to_index in self.key_index[1]["indexes"]:
-            raise ValueError
-        self.key_index[1]["indexes"][field_to_index] = []
-        self.key_index[1]["indexes"][field_to_index].append(f'{DB_ROOT}\\{field_to_index}_hash_index.json')
-        self.key_index[1]["indexes"][field_to_index].append("hash_index")
-        index = []
-        index.append({})
-        for path in self.key_index[1]["list_of_table_pathes"]:
-            with open(path, 'r+') as the_file:
-                data = json.load(the_file)
-                for key in data[0]:
-                    if field_to_index in data[0][key]:
-                        if data[0][key][field_to_index] not in index[0]:
-                            index[0][data[0][key][field_to_index]] = []
-                        index[0][data[0][key][field_to_index]].append(key)
-
-        the_file = open(self.key_index[1]["indexes"][field_to_index][0], 'w+', encoding="utf8")
-        the_file.write(json.dumps(index, default=str))
-        the_file.close()
 
     def get_hash_index(self, field_to_index: str):
         if field_to_index not in self.key_index[1]["indexes"]:
@@ -247,61 +208,61 @@ class DBTable(db_api.DBTable):
         return self.key_index[1]["indexes"][field_to_index][0]
 
     def create_index(self, field_to_index: str, type) -> None:
-        if type == "text_index":
-            self.create_text_index(field_to_index)
-        if type == "hash_index":
-            self.create_hash_index(field_to_index)
+        if field_to_index in self.key_index[1]["indexes"]:
+            raise ValueError
+        self.key_index[1]["indexes"][field_to_index] = []
+        self.key_index[1]["indexes"][field_to_index].append(f'{DB_ROOT}\\{field_to_index}_{type}.json')
+        self.key_index[1]["indexes"][field_to_index].append(type)
+        index = []
+        index.append({})
+        for path in self.key_index[1]["list_of_table_pathes"]:
+            the_file = open(path, 'r+')
+            data = json.load(the_file)
+            if type == "text_index":
+                self.create_text_index(field_to_index, index, data)
+            if type == "hash_index":
+                self.create_hash_index(field_to_index, index, data)
+            the_file.close()
+        the_file = open(self.key_index[1]["indexes"][field_to_index][0], 'w+', encoding="utf8")
+        the_file.write(json.dumps(index, default=str))
+        the_file.close()
+
+    def create_hash_index(self, field_to_index: str, index, data):
+        for key in data[0]:
+            if field_to_index in data[0][key]:
+                if data[0][key][field_to_index] not in index[0]:
+                    index[0][data[0][key][field_to_index]] = []
+                index[0][data[0][key][field_to_index]].append(key)
 
     @staticmethod
     def words_dilution(words):
         exclude = punctuation
-        ls=[]
+        ls = []
         ps = PorterStemmer()
         for i,word in enumerate(words):
             word = ps.stem(word)
             str_input = (''.join(ch for ch in word if ch not in exclude)).lower()
             if str_input != "":
                 ls.append(str_input)
-        ls = list(set(ls))
-        ls = [word for word in ls if word not in list(get_stop_words('en'))]
-        return ls
+        return [word for word in set(ls) if word not in list(get_stop_words('en'))]
 
     def find_in_text_index(self, field, words):
         words = self.words_dilution(words.split(" "))
         with open(self.key_index[1]["indexes"][field][0], 'r+') as the_file:
             index = json.load(the_file)
+            _list = index[0][words[0]]
             for w in words:
                 if w in index[0]:
-                    _list = index[0][w]
-                    for word in words:
-                        if word in index[0]:
-                           _list = set(_list) & set(index[0][word])
+                    _list = set(_list) & set(index[0][w])
         return list(_list)
 
-    def create_text_index(self, field_to_index: str) -> None:
-        if field_to_index in self.key_index[1]["indexes"]:
-            raise  ValueError
-        self.key_index[1]["indexes"][field_to_index] = []
-        self.key_index[1]["indexes"][field_to_index].append(f'{DB_ROOT}\\{field_to_index}_text_index.json')
-        self.key_index[1]["indexes"][field_to_index].append("text_index")
-        index = []
-        index.append({})
-        for path in self.key_index[1]["list_of_table_pathes"]:
-            with open(path, 'r+') as the_file:
-                data = json.load(the_file)
-                for key in data[0]:
-                    words = data[0][key][field_to_index].split(" ")
-                    words = self.words_dilution(words)
-                    for word in words:
-                        if word not in index[0]:
-                            index[0][word] = []
-                        index[0][word].append(key)
-
-        the_file = open(self.key_index[1]["indexes"][field_to_index][0], 'w+', encoding="utf8")
-        the_file.write(json.dumps(index, default=str))
-        the_file.close()
-
-
+    def create_text_index(self, field_to_index: str, index, data) -> None:
+        for key in data[0]:
+            words = self.words_dilution(data[0][key][field_to_index].split(" "))
+            for word in words:
+                if word not in index[0]:
+                    index[0][word] = []
+                index[0][word].append(key)
 
 
 
