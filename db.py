@@ -168,8 +168,8 @@ class DBTable(db_api.DBTable):
 
     def delete_records(self, criteria: List[SelectionCriteria]) -> None:
         # todo: improve afficiant
-        for key in self.query_table(criteria):
-            self.delete_record(key)
+        for dict in self.query_table(criteria):
+            self.delete_record(dict[self.key_field_name])
 
     def get_record(self, key: Any) -> Dict[str, Any]:
         table_file = open(self.key_index[0][str(key)])
